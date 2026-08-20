@@ -6,6 +6,9 @@ const cors = require('cors');
 const cookieParser = require('cookie-parser');
 
 const connectDB = require('./config/dbcon.js');
+const authRoutes = require('./routes/authRoutes.js');
+const eventRoutes = require('./routes/eventRoutes.js');
+
 
 const app = express()
 const PORT =process.env.PORT
@@ -41,3 +44,13 @@ app.get('/api/health', (req, res) => {
         }
     )
 })
+
+app.use('/api/auth', authRoutes);
+app.use('/api/events', eventRoutes);
+
+app.use((req, res) => res.status(404).json({ message: "Route not found" }));
+
+app.use((err, _req, res, _next) => {
+  console.error(err);
+  res.status(err.status || 500).json({ message: err.message || "Server error" });
+});
