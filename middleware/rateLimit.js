@@ -8,7 +8,7 @@ const loginLimiter = rateLimit({
     message: {message: "Too many login attempts. Please try again in 15 minutes"}
 });
 
-const registerLimit = rateLimit({
+const registerLimiter = rateLimit({
     windowMs: 60 * 60 * 1000,
     max: 10,
     standardHeaders: true,
