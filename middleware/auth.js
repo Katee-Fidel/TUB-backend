@@ -1,5 +1,18 @@
 const {verifyAccessToken} = require ('../utils/jwt.js');
 
+function optionalAuth(req, _res, next) {
+    const token = req.cookies?.accessToken;
+    if (token) {
+        try {
+            const decoded = verifyAccessToken(token);
+            req.user = {id: decoded.id, role: decoded.role};
+        } catch (error) {
+            // An invalid optional cookie should not block public requests.
+        }
+    }
+    next();
+}
+
  function requireAuth(req, res, next) {
     const token = req.cookies?.accessToken;
 
@@ -36,5 +49,5 @@ const {verifyAccessToken} = require ('../utils/jwt.js');
     };
 }
 
-module.exports = { requireAuth, requireRole};
+module.exports = { requireAuth, requireRole, optionalAuth};
 
