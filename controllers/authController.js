@@ -5,7 +5,7 @@ const {signAccessToken, signRefreshToken, verifyRefreshToken, cookieOptions,} = 
 
 
 const ACCESS_MAX_AGE =15 * 60 * 1000;
-const REFRESH_MAX_AGE = 7 * 24 * 60 * 1000;
+const REFRESH_MAX_AGE = 7 * 24 * 60 * 60 * 1000;
 
 function setAuthCookies(res, user) {
     const accessToken = signAccessToken(user);
@@ -83,7 +83,7 @@ async function login(req, res) {
         if (!isMatch) {
             return res.status(401).json(
                 {
-                    message: "Invalid Password"
+                    message: "Invalid credentials"
                 }
             )
         }
