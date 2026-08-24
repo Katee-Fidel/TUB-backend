@@ -12,7 +12,7 @@ const registerLimiter = rateLimit({
     windowMs: 60 * 60 * 1000,
     max: 10,
     standardHeaders: true,
-    messagge: {message: "Too many accounts created from this location. Please try again later."}
+    message: {message: "Too many accounts created from this location. Please try again later."}
 });
 
 module.exports = {loginLimiter, registerLimiter};
