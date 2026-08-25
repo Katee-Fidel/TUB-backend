@@ -1,6 +1,7 @@
 const express = require('express');
 const {requireAuth, requireRole, optionalAuth} = require('../middleware/auth.js');
 const { uploadBanner } = require('../config/cloudinary.js');
+const {verifyOrigin} = require('../middleware/csrf.js');
 const {
     createEvent,
     getPublicEvents,
@@ -11,6 +12,8 @@ const {
 } = require('../controllers/eventController.js');
 
 const router = express.Router();
+
+router.use(verifyOrigin);
 
 router.get('/', getPublicEvents);
 router.get('/mine', requireAuth, requireRole('artist'), getMyEvents);
