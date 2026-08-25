@@ -1,3 +1,4 @@
+
 const DARAJA_BASE_URL =
     process.env.DARAJA_ENV === "production"
         ? "https://api.safaricom.co.ke"
@@ -7,32 +8,30 @@ let cachedToken = null;
 let cachedTokenExpiresAt = 0;
 
 
-async function getAcccessToken() {
+async function getAccessToken() {
     if (cachedToken && Date.now() < cachedTokenExpiresAt) {
         return cachedToken;
     }
 
+    const credentials = Buffer.from(
+        `${process.env.DARAJA_CONSUMER_KEY}:${process.env.DARAJA_CONSUMER_SECRET}`
+    ).toString("base64");
 
-const credentials = Buffer.from(
-    `${process.env.DARAJA_CONSUMER_KEY}:${process.env.DARAJA_CONSUMER_SECRET}`
-).toString("base64");
+    const res = await fetch(`${DARAJA_BASE_URL}/oauth/v1/generate?grant_type=client_credentials`, {
+        headers: { Authorization: `Basic ${credentials}` },
+    });
 
-const res = await fetch(`${DARAJA_BASE_URL}/oauth/v1/generate?grant_type=client_credentials`, {
-    headers: {Authorization: `Basic ${credentials}`},
-});
+    if (!res.ok) {
+        throw new Error(`Daraja OAuth request failed: ${res.status}`);
+    }
 
-if (!res.ok) {
-    throw new Error(`Daraja OAuth request failed: ${res.status}`);
-}
+    const data = await res.json();
 
-const data = await res.json();
+    cachedToken = data.access_token;
+   
+    cachedTokenExpiresAt = Date.now() + (Number(data.expires_in || 3599) - 60) * 1000;
 
-cachedToken = data.access_token;
-
-
-cachedTokenExpiresAt = Date.now() +v(Number(data.expires_in || 3599) - 60) * 1000;
-
-return cachedToken;
+    return cachedToken;
 }
 
 function buildTimestamp() {
@@ -47,23 +46,18 @@ function buildTimestamp() {
         pad(now.getSeconds())
     );
 }
- 
+
 function buildPassword(timestamp) {
     const raw = `${process.env.DARAJA_SHORTCODE}${process.env.DARAJA_PASSKEY}${timestamp}`;
     return Buffer.from(raw).toString("base64");
 }
- 
-/**
- * Initiates an STK Push prompt on the given phone number.
- * Returns Safaricom's response, which includes MerchantRequestID and
- * CheckoutRequestID — both must be persisted by the caller before this
- * resolves, so the eventual callback can be matched back to a record.
- */
+
+
 async function initiateStkPush({ phone, amount, accountReference, transactionDesc }) {
     const token = await getAccessToken();
     const timestamp = buildTimestamp();
     const password = buildPassword(timestamp);
- 
+
     const res = await fetch(`${DARAJA_BASE_URL}/mpesa/stkpush/v1/processrequest`, {
         method: "POST",
         headers: {
@@ -84,16 +78,14 @@ async function initiateStkPush({ phone, amount, accountReference, transactionDes
             TransactionDesc: transactionDesc,
         }),
     });
- 
+
     const data = await res.json();
- 
+
     if (!res.ok) {
-        // Daraja returns errorMessage/errorCode on failure, not a 2xx with
-        // ResponseCode !== 0 — surface whatever it gave us.
         throw new Error(data.errorMessage || "STK push request failed");
     }
- 
-    return data; // { MerchantRequestID, CheckoutRequestID, ResponseCode, ... }
+
+    return data; 
 }
- 
+
 module.exports = { getAccessToken, initiateStkPush };
