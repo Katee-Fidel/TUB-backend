@@ -8,6 +8,8 @@ const cookieParser = require('cookie-parser');
 const connectDB = require('./config/dbcon.js');
 const authRoutes = require('./routes/authRoutes.js');
 const eventRoutes = require('./routes/eventRoutes.js');
+const walletRoutes = require('./routes/walletRoutes.js');
+
 
 
 const app = express()
@@ -15,7 +17,6 @@ const PORT = process.env.PORT || 5000
 
 
 app.set('trust proxy', 1);
-
 
 dns.setServers(["8.8.8.8", "1.1.1.1", "8.8.4.4"]);
 
@@ -56,6 +57,7 @@ app.get('/api/health', (req, res) => {
 
 app.use('/api/auth', authRoutes);
 app.use('/api/events', eventRoutes);
+app.use('/api/wallet', walletRoutes);
 
 app.use((req, res) => res.status(404).json({ message: "Route not found" }));
 
