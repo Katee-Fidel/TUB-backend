@@ -9,6 +9,7 @@ const {
     getEventById,
     updateEvent,
     deleteEvent,
+    purchaseEventTicket,
 } = require('../controllers/eventController.js');
 
 const router = express.Router();
@@ -23,6 +24,7 @@ router.get('/ping-fan-blocked', requireAuth, requireRole('artist'), (req, res) =
     });
 });
 router.post('/', requireAuth, requireRole('artist'), uploadBanner.single('banner'), createEvent);
+router.post('/:id/purchase', requireAuth, purchaseEventTicket);
 router.get('/:id', optionalAuth, getEventById);
 router.patch('/:id', requireAuth, requireRole('artist'), uploadBanner.single('banner'), updateEvent);
 router.delete('/:id', requireAuth, requireRole('artist'), deleteEvent);

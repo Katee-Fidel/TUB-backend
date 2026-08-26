@@ -9,6 +9,8 @@ const connectDB = require('./config/dbcon.js');
 const authRoutes = require('./routes/authRoutes.js');
 const eventRoutes = require('./routes/eventRoutes.js');
 const walletRoutes = require('./routes/walletRoutes.js');
+const ticketRoutes = require('./routes/ticketRoutes.js');
+const { handleMpesaCallback } = require('./controllers/walletController.js');
 
 
 
@@ -55,9 +57,11 @@ app.get('/api/health', (req, res) => {
     )
 })
 
+app.post('/api/mpesa/callback', handleMpesaCallback);
 app.use('/api/auth', authRoutes);
 app.use('/api/events', eventRoutes);
 app.use('/api/wallet', walletRoutes);
+app.use('/api/tickets', ticketRoutes);
 
 app.use((req, res) => res.status(404).json({ message: "Route not found" }));
 

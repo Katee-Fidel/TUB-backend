@@ -12,6 +12,7 @@ const registerLimiter = rateLimit({
     windowMs: 60 * 60 * 1000,
     max: 10,
     standardHeaders: true,
+    legacyHeaders: false,
     message: {message: "Too many accounts created from this location. Please try again later."}
 });
 

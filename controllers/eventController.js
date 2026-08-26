@@ -1,5 +1,9 @@
 const Event = require("../models/Event.js");
+const Ticket = require("../models/Ticket.js");
+const Wallet = require("../models/Wallet.js");
 const { cloudinary } = require("../config/cloudinary.js");
+const { generateAndUploadQRCode } = require("../utils/qrCode.js");
+const { initiateStkPush } = require("../utils/mpesa.js");
 
 // POST /api/events  (artist only)
 async function createEvent(req, res) {
@@ -135,6 +139,133 @@ async function deleteEvent(req, res) {
   }
 }
 
+// POST /api/events/:id/purchase  (authenticated, handles wallet & M-Pesa)
+async function purchaseEventTicket(req, res) {
+  try {
+    const event = await Event.findById(req.params.id);
+    if (!event) {
+      return res.status(404).json({ message: "Event not found" });
+    }
+
+    if (event.status !== "published") {
+      return res.status(400).json({ message: "This event is not currently open for ticket purchase" });
+    }
+
+    const quantity = Number(req.body.quantity ?? 1);
+    const paymentMethod = req.body.paymentMethod || "wallet";
+    const phone = req.body.phone || ""; // Required for M-Pesa
+
+    if (!["wallet", "mpesa"].includes(paymentMethod)) {
+      return res.status(400).json({ message: "Invalid payment method" });
+    }
+
+    if (!Number.isInteger(quantity) || quantity <= 0) {
+      return res.status(400).json({ message: "Quantity must be a positive whole number" });
+    }
+
+    const remainingTickets = event.totalTickets - event.ticketsSold;
+    if (quantity > remainingTickets) {
+      return res.status(400).json({
+        message: `Only ${remainingTickets} ticket(s) remaining for this event`,
+      });
+    }
+
+    const totalAmount = event.ticketPrice * quantity;
+    const qrData = `TUB-${event._id.toString().slice(-6)}-${req.user.id.toString().slice(-6)}-${Date.now()}`;
+
+    // Create ticket with payment method
+    const ticket = await Ticket.create({
+      user: req.user.id,
+      event: event._id,
+      quantity,
+      unitPrice: event.ticketPrice,
+      totalAmount,
+      paymentMethod,
+      status: "pending",
+      qrCode: qrData,
+      qrImageUrl: null, // Will be set after payment confirmation
+    });
+
+    // Handle wallet payment
+    if (paymentMethod === "wallet") {
+      const wallet = await Wallet.findOne({ user: req.user.id });
+      if (!wallet) {
+        await ticket.deleteOne();
+        return res.status(404).json({ message: "Wallet not found" });
+      }
+
+      if (wallet.balance < totalAmount) {
+        await ticket.deleteOne();
+        return res.status(400).json({ message: `Insufficient wallet balance (need KES ${totalAmount}, have KES ${wallet.balance})` });
+      }
+
+      // Deduct from wallet
+      wallet.balance -= totalAmount;
+      await wallet.save();
+
+      // Generate QR code for paid ticket
+      const qrImageUrl = await generateAndUploadQRCode(qrData, ticket._id.toString());
+      ticket.status = "paid";
+      ticket.qrImageUrl = qrImageUrl;
+      await ticket.save();
+
+      // Update event sold count
+      event.ticketsSold += quantity;
+      await event.save();
+
+      return res.status(201).json({
+        message: "Ticket purchase successful",
+        ticket: ticket.toObject(),
+      });
+    }
+
+    // Handle M-Pesa payment
+    if (paymentMethod === "mpesa") {
+      if (!phone) {
+        await ticket.deleteOne();
+        return res.status(400).json({ message: "Phone number required for M-Pesa payment" });
+      }
+
+      // Normalize phone number
+      const normalizedPhone = String(phone).replace(/^\+/, "").replace(/^0/, "254");
+      const phonePattern = /^254\d{9}$/;
+
+      if (!phonePattern.test(normalizedPhone)) {
+        await ticket.deleteOne();
+        return res.status(400).json({ message: "Invalid phone number format (expected 2547xxxxxxxx)" });
+      }
+
+      try {
+        // Initiate STK push for M-Pesa
+        const stkResponse = await initiateStkPush({
+          phone: normalizedPhone,
+          amount: Math.round(totalAmount),
+          accountReference: `TUB-${event._id.toString().slice(-6)}-${ticket._id.toString().slice(-6)}`,
+          transactionDesc: `${event.title} - ${quantity} ticket(s)`,
+        });
+
+        // Store M-Pesa request IDs on the ticket for later callback matching
+        ticket.checkoutRequestID = stkResponse.CheckoutRequestID || null;
+        ticket.merchantRequestID = stkResponse.MerchantRequestID || null;
+        await ticket.save();
+
+        // Return ticketId for frontend to poll status
+        return res.status(201).json({
+          message: "M-Pesa STK push initiated — check status at /api/tickets/{id}/status",
+          ticketId: ticket._id.toString(),
+        });
+      } catch (error) {
+        await ticket.deleteOne();
+        console.error("STK push initiation failed:", error);
+        return res.status(502).json({ message: "Could not initiate M-Pesa payment. Please try again." });
+      }
+    }
+  } catch (err) {
+    console.error("purchaseEventTicket error:", err);
+    return res.status(500).json({ message: "Server error purchasing ticket" });
+  }
+}
+
 module.exports = {
   createEvent,
   getPublicEvents,
@@ -142,4 +273,5 @@ module.exports = {
   getEventById,
   updateEvent,
   deleteEvent,
+  purchaseEventTicket,
 };
