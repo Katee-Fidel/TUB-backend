@@ -1,4 +1,5 @@
 const https = require("https");
+const dns = require("dns").promises;
 
 const DARAJA_BASE_URL =
     process.env.DARAJA_ENV === "production"
@@ -72,9 +73,7 @@ async function getAccessToken(forceRefresh = false) {
                     parsed.error_description ||
                     parsed.message ||
                     details;
-            } catch (_) {
-                // Keep the raw response when Daraja does not return JSON.
-            }
+            } catch (_) {}
         }
 
         console.error("Daraja OAuth rejected request", {
@@ -93,9 +92,7 @@ async function getAccessToken(forceRefresh = false) {
             consumerSecretLength: process.env.DARAJA_CONSUMER_SECRET?.length || 0,
         });
 
-        throw new Error(
-            `Daraja OAuth request failed (${res.statusCode}): ${details || "Provider returned an empty error response"}`
-        );
+        throw new Error(`Daraja OAuth request failed (${res.statusCode}): ${details || "Provider returned an empty error response"}`);
     }
 
     let data;
@@ -105,13 +102,10 @@ async function getAccessToken(forceRefresh = false) {
         throw new Error("Daraja OAuth response was not valid JSON");
     }
 
-    if (!data.access_token) {
-        throw new Error("Daraja OAuth response did not include an access token");
-    }
+    if (!data.access_token) throw new Error("Daraja OAuth response did not include an access token");
 
     cachedToken = data.access_token;
     cachedTokenExpiresAt = Date.now() + (Number(data.expires_in || 3599) - 60) * 1000;
-
     return cachedToken;
 }
 
@@ -129,7 +123,6 @@ async function sendStkPush(token, payload) {
         },
         body: JSON.stringify(payload),
     });
-
     const data = await res.json().catch(() => ({}));
     return { res, data };
 }
@@ -137,25 +130,16 @@ async function sendStkPush(token, payload) {
 function buildTimestamp() {
     const now = new Date();
     const pad = (n) => String(n).padStart(2, "0");
-    return (
-        now.getFullYear().toString() +
-        pad(now.getMonth() + 1) +
-        pad(now.getDate()) +
-        pad(now.getHours()) +
-        pad(now.getMinutes()) +
-        pad(now.getSeconds())
-    );
+    return now.getFullYear().toString() + pad(now.getMonth() + 1) + pad(now.getDate()) + pad(now.getHours()) + pad(now.getMinutes()) + pad(now.getSeconds());
 }
 
 function buildPassword(timestamp) {
-    const raw = `${process.env.DARAJA_SHORTCODE}${process.env.DARAJA_PASSKEY}${timestamp}`;
-    return Buffer.from(raw).toString("base64");
+    return Buffer.from(`${process.env.DARAJA_SHORTCODE}${process.env.DARAJA_PASSKEY}${timestamp}`).toString("base64");
 }
 
 async function initiateStkPush({ phone, amount, accountReference, transactionDesc }) {
     const timestamp = buildTimestamp();
     const password = buildPassword(timestamp);
-
     const payload = {
         BusinessShortCode: process.env.DARAJA_SHORTCODE,
         Password: password,
@@ -171,19 +155,56 @@ async function initiateStkPush({ phone, amount, accountReference, transactionDes
     };
 
     let { res, data } = await sendStkPush(await getAccessToken(), payload);
-
     if (!res.ok && isInvalidAccessTokenResponse(data)) {
         cachedToken = null;
         cachedTokenExpiresAt = 0;
         ({ res, data } = await sendStkPush(await getAccessToken(true), payload));
     }
-
     if (!res.ok) {
-        const providerMessage = data.errorMessage || data.error_description || "STK push request failed";
-        throw new Error(`Daraja STK push failed (${res.status}): ${providerMessage}`);
+        throw new Error(`Daraja STK push failed (${res.status}): ${data.errorMessage || data.error_description || "STK push request failed"}`);
     }
-
     return data;
 }
 
-module.exports = { getAccessToken, initiateStkPush };
+async function getNetworkDiagnostics() {
+    const hostname = new URL(DARAJA_BASE_URL).hostname;
+    const addresses = await dns.lookup(hostname, { all: true });
+
+    return new Promise((resolve, reject) => {
+        const url = new URL(`${DARAJA_BASE_URL}/oauth/v1/generate?grant_type=client_credentials`);
+        const req = https.request({
+            hostname: url.hostname,
+            port: 443,
+            path: `${url.pathname}${url.search}`,
+            method: "HEAD",
+            headers: { "User-Agent": "TUB-backend/1.0", Accept: "*/*" },
+        }, (res) => {
+            const socket = res.socket;
+            resolve({
+                dnsAddresses: addresses.map((item) => item.address),
+                status: res.statusCode,
+                statusText: res.statusMessage,
+                remoteAddress: socket?.remoteAddress || null,
+                remotePort: socket?.remotePort || null,
+                localAddress: socket?.localAddress || null,
+                localPort: socket?.localPort || null,
+                tlsProtocol: socket?.getProtocol?.() || null,
+                tlsCipher: socket?.getCipher?.().name || null,
+                authorized: socket?.authorized ?? null,
+                authorizationError: socket?.authorizationError || null,
+                responseHeaders: {
+                    contentType: res.headers["content-type"] || null,
+                    server: res.headers.server || null,
+                    via: res.headers.via || null,
+                    requestId: res.headers["x-request-id"] || res.headers["x-correlation-id"] || null,
+                },
+            });
+            res.resume();
+        });
+        req.setTimeout(15000, () => req.destroy(new Error("Daraja network diagnostic timed out")));
+        req.on("error", reject);
+        req.end();
+    });
+}
+
+module.exports = { getAccessToken, initiateStkPush, getNetworkDiagnostics };
