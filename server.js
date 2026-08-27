@@ -4,6 +4,7 @@ const express = require('express');
 const dns = require('dns');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
+const crypto = require('crypto');
 
 const connectDB = require('./config/dbcon.js');
 const Transaction = require('./models/Transaction.js');
@@ -61,9 +62,21 @@ startServer();
 
 app.get('/api/health', (_req, res) => res.json({ status: "Ok Tub server is running and healthy" }));
 
-app.get('/api/mpesa/diagnostics/oauth', async (req, res) => {
+const requireMpesaDiagnosticToken = (req, res) => {
     const expectedToken = process.env.MPESA_DIAGNOSTIC_TOKEN;
-    if (!expectedToken || req.get('x-mpesa-diagnostic-token') !== expectedToken) return res.status(404).json({ message: 'Not found' });
+    if (!expectedToken || req.get('x-mpesa-diagnostic-token') !== expectedToken) {
+        res.status(404).json({ message: 'Not found' });
+        return false;
+    }
+    return true;
+};
+
+const fingerprint = (value) => value
+    ? crypto.createHash('sha256').update(value, 'utf8').digest('hex')
+    : null;
+
+app.get('/api/mpesa/diagnostics/oauth', async (req, res) => {
+    if (!requireMpesaDiagnosticToken(req, res)) return;
 
     try {
         const startedAt = Date.now();
@@ -93,14 +106,31 @@ app.get('/api/mpesa/diagnostics/oauth', async (req, res) => {
 });
 
 app.get('/api/mpesa/diagnostics/network', async (req, res) => {
-    const expectedToken = process.env.MPESA_DIAGNOSTIC_TOKEN;
-    if (!expectedToken || req.get('x-mpesa-diagnostic-token') !== expectedToken) return res.status(404).json({ message: 'Not found' });
+    if (!requireMpesaDiagnosticToken(req, res)) return;
 
     try {
         return res.json({ ok: true, ...(await getNetworkDiagnostics()) });
     } catch (error) {
         return res.status(502).json({ ok: false, error: error.message });
     }
+});
+
+app.get('/api/mpesa/diagnostics/config', (req, res) => {
+    if (!requireMpesaDiagnosticToken(req, res)) return;
+
+    const consumerKey = process.env.DARAJA_CONSUMER_KEY || '';
+    const consumerSecret = process.env.DARAJA_CONSUMER_SECRET || '';
+    const passkey = process.env.DARAJA_PASSKEY || '';
+    const callbackUrl = process.env.DARAJA_CALLBACK_URL || '';
+
+    return res.json({
+        environment: process.env.DARAJA_ENV || 'sandbox(default)',
+        consumerKey: { configured: Boolean(consumerKey), length: consumerKey.length, sha256: fingerprint(consumerKey) },
+        consumerSecret: { configured: Boolean(consumerSecret), length: consumerSecret.length, sha256: fingerprint(consumerSecret) },
+        passkey: { configured: Boolean(passkey), length: passkey.length, sha256: fingerprint(passkey) },
+        shortcode: { configured: Boolean(process.env.DARAJA_SHORTCODE), value: process.env.DARAJA_SHORTCODE || null },
+        callbackUrl: { configured: Boolean(callbackUrl), value: callbackUrl || null },
+    });
 });
 
 app.post('/api/mpesa/callback', handleMpesaCallback);
