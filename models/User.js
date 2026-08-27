@@ -20,6 +20,7 @@ const userSchema = new mongoose.Schema(
             default: "fan",
         },
         avatarUrl: {type: String, default:""},
+        avatarPublicId: {type: String, default:""},
         wallet: {type: mongoose.Schema.Types.ObjectId, ref: "Wallet"},
     },
     {timestamps: true}

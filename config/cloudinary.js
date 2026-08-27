@@ -25,4 +25,25 @@ const uploadBanner = multer({
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB cap
 });
 
-module.exports = { cloudinary, uploadBanner };
+const postStorage = new CloudinaryStorage({
+  cloudinary,
+  params: {
+    folder: "tub/posts",
+    allowed_formats: ["jpg", "jpeg", "png", "webp"],
+    transformation: [{ width: 1600, height: 1600, crop: "limit" }],
+  },
+});
+
+const uploadPost = multer({ storage: postStorage, limits: { fileSize: 8 * 1024 * 1024 } });
+
+const avatarStorage = new CloudinaryStorage({
+  cloudinary,
+  params: {
+    folder: "tub/avatars",
+    allowed_formats: ["jpg", "jpeg", "png", "webp"],
+    transformation: [{ width: 512, height: 512, crop: "fill", gravity: "face" }],
+  },
+});
+const uploadAvatar = multer({ storage: avatarStorage, limits: { fileSize: 3 * 1024 * 1024 } });
+
+module.exports = { cloudinary, uploadBanner, uploadPost, uploadAvatar };

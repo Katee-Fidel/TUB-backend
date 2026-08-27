@@ -8,8 +8,8 @@ let cachedToken = null;
 let cachedTokenExpiresAt = 0;
 
 
-async function getAccessToken() {
-    if (cachedToken && Date.now() < cachedTokenExpiresAt) {
+async function getAccessToken(forceRefresh = false) {
+    if (!forceRefresh && cachedToken && Date.now() < cachedTokenExpiresAt) {
         return cachedToken;
     }
 
@@ -27,11 +27,34 @@ async function getAccessToken() {
 
     const data = await res.json();
 
+    if (!data.access_token) {
+        throw new Error("Daraja OAuth response did not include an access token");
+    }
+
     cachedToken = data.access_token;
    
     cachedTokenExpiresAt = Date.now() + (Number(data.expires_in || 3599) - 60) * 1000;
 
     return cachedToken;
+}
+
+function isInvalidAccessTokenResponse(data) {
+    const message = String(data?.errorMessage || data?.error_description || data?.message || "");
+    return message.toLowerCase().includes("invalid access token");
+}
+
+async function sendStkPush(token, payload) {
+    const res = await fetch(`${DARAJA_BASE_URL}/mpesa/stkpush/v1/processrequest`, {
+        method: "POST",
+        headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+    });
+
+    const data = await res.json().catch(() => ({}));
+    return { res, data };
 }
 
 function buildTimestamp() {
@@ -54,35 +77,36 @@ function buildPassword(timestamp) {
 
 
 async function initiateStkPush({ phone, amount, accountReference, transactionDesc }) {
-    const token = await getAccessToken();
     const timestamp = buildTimestamp();
     const password = buildPassword(timestamp);
 
-    const res = await fetch(`${DARAJA_BASE_URL}/mpesa/stkpush/v1/processrequest`, {
-        method: "POST",
-        headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-            BusinessShortCode: process.env.DARAJA_SHORTCODE,
-            Password: password,
-            Timestamp: timestamp,
-            TransactionType: "CustomerPayBillOnline",
-            Amount: Math.round(amount),
-            PartyA: phone,
-            PartyB: process.env.DARAJA_SHORTCODE,
-            PhoneNumber: phone,
-            CallBackURL: process.env.DARAJA_CALLBACK_URL,
-            AccountReference: accountReference,
-            TransactionDesc: transactionDesc,
-        }),
-    });
+    const payload = {
+        BusinessShortCode: process.env.DARAJA_SHORTCODE,
+        Password: password,
+        Timestamp: timestamp,
+        TransactionType: "CustomerPayBillOnline",
+        Amount: Math.round(amount),
+        PartyA: phone,
+        PartyB: process.env.DARAJA_SHORTCODE,
+        PhoneNumber: phone,
+        CallBackURL: process.env.DARAJA_CALLBACK_URL,
+        AccountReference: accountReference,
+        TransactionDesc: transactionDesc,
+    };
 
-    const data = await res.json();
+    let { res, data } = await sendStkPush(await getAccessToken(), payload);
+
+    // A server can retain a token after Daraja invalidates it. Refresh once and
+    // retry the exact request; do not retry other failures to avoid duplicate STK prompts.
+    if (!res.ok && isInvalidAccessTokenResponse(data)) {
+        cachedToken = null;
+        cachedTokenExpiresAt = 0;
+        ({ res, data } = await sendStkPush(await getAccessToken(true), payload));
+    }
 
     if (!res.ok) {
-        throw new Error(data.errorMessage || "STK push request failed");
+        const providerMessage = data.errorMessage || data.error_description || "STK push request failed";
+        throw new Error(`Daraja STK push failed (${res.status}): ${providerMessage}`);
     }
 
     return data; 

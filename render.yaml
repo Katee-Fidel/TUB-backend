@@ -1,0 +1,40 @@
+services:
+  - type: web
+    name: tamasha-hub-api
+    runtime: node
+    plan: free
+    buildCommand: npm ci
+    startCommand: node server.js
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: MONGODB_URI
+        sync: false
+      - key: CLIENT_URL
+        sync: false
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: JWT_TICKET_SECRET
+        generateValue: true
+      - key: DARAJA_ENV
+        value: sandbox
+      - key: DARAJA_CONSUMER_KEY
+        sync: false
+      - key: DARAJA_CONSUMER_SECRET
+        sync: false
+      - key: DARAJA_SHORTCODE
+        sync: false
+      - key: DARAJA_PASSKEY
+        sync: false
+      - key: DARAJA_CALLBACK_URL
+        sync: false
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false

@@ -10,6 +10,8 @@ const authRoutes = require('./routes/authRoutes.js');
 const eventRoutes = require('./routes/eventRoutes.js');
 const walletRoutes = require('./routes/walletRoutes.js');
 const ticketRoutes = require('./routes/ticketRoutes.js');
+const postRoutes = require('./routes/postRoutes.js');
+const userRoutes = require('./routes/userRoutes.js');
 const { handleMpesaCallback } = require('./controllers/walletController.js');
 
 
@@ -62,6 +64,8 @@ app.use('/api/auth', authRoutes);
 app.use('/api/events', eventRoutes);
 app.use('/api/wallet', walletRoutes);
 app.use('/api/tickets', ticketRoutes);
+app.use('/api/posts', postRoutes);
+app.use('/api/users', userRoutes);
 
 app.use((req, res) => res.status(404).json({ message: "Route not found" }));
 

@@ -4,6 +4,8 @@ const Wallet = require("../models/Wallet.js");
 const { cloudinary } = require("../config/cloudinary.js");
 const { generateAndUploadQRCode } = require("../utils/qrCode.js");
 const { initiateStkPush } = require("../utils/mpesa.js");
+const { createTicketToken } = require("../utils/ticketToken.js");
+const { randomUUID } = require("crypto");
 
 // POST /api/events  (artist only)
 async function createEvent(req, res) {
@@ -171,8 +173,6 @@ async function purchaseEventTicket(req, res) {
     }
 
     const totalAmount = event.ticketPrice * quantity;
-    const qrData = `TUB-${event._id.toString().slice(-6)}-${req.user.id.toString().slice(-6)}-${Date.now()}`;
-
     // Create ticket with payment method
     const ticket = await Ticket.create({
       user: req.user.id,
@@ -182,9 +182,14 @@ async function purchaseEventTicket(req, res) {
       totalAmount,
       paymentMethod,
       status: "pending",
-      qrCode: qrData,
+      // This temporary value exists only until MongoDB assigns the ticket ID.
+      // The stored QR value is replaced immediately below with a signed token.
+      qrCode: `pending-${randomUUID()}`,
       qrImageUrl: null, // Will be set after payment confirmation
     });
+
+    ticket.qrCode = createTicketToken(ticket);
+    await ticket.save();
 
     // Handle wallet payment
     if (paymentMethod === "wallet") {
