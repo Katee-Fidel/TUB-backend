@@ -25,6 +25,7 @@ function requestOAuthToken() {
                 headers: {
                     Authorization: `Basic ${credentials}`,
                     Accept: "application/json",
+                    "User-Agent": "TUB-backend/1.0",
                 },
             },
             (res) => {
@@ -84,6 +85,8 @@ async function getAccessToken(forceRefresh = false) {
             contentType,
             bodyLength: body.length,
             requestId,
+            server: res.headers.server || "unknown",
+            via: res.headers.via || "none",
             consumerKeyConfigured: Boolean(process.env.DARAJA_CONSUMER_KEY),
             consumerSecretConfigured: Boolean(process.env.DARAJA_CONSUMER_SECRET),
             consumerKeyLength: process.env.DARAJA_CONSUMER_KEY?.length || 0,
