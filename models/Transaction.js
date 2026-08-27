@@ -19,8 +19,8 @@ const transactionSchema = new mongoose.Schema(
 
     phone: { type: String, trim: true, default: '' },
     merchantRequestID: { type: String, default: null, index: true },
-    checkoutRequestID: { type: String, default: null, unique: true, sparse: true },
-    mpesaReceiptNumber: { type: String, default: null, unique: true, sparse: true, index: true },
+    checkoutRequestID: { type: String, default: null },
+    mpesaReceiptNumber: { type: String, default: null },
     transactionDate: { type: Date, default: null },
     resultCode: { type: Number, default: null },
     resultDesc: { type: String, default: '' },
@@ -31,5 +31,17 @@ const transactionSchema = new mongoose.Schema(
 
 transactionSchema.index({ user: 1, createdAt: -1 });
 transactionSchema.index({ wallet: 1, createdAt: -1 });
+
+// Only real M-Pesa identifiers participate in uniqueness checks. This avoids
+// MongoDB treating multiple null values as duplicates while preserving
+// idempotency for actual checkout/receipt identifiers.
+transactionSchema.index(
+  { checkoutRequestID: 1 },
+  { name: 'checkoutRequestID_1', unique: true, partialFilterExpression: { checkoutRequestID: { $type: 'string' } } }
+);
+transactionSchema.index(
+  { mpesaReceiptNumber: 1 },
+  { name: 'mpesaReceiptNumber_1', unique: true, partialFilterExpression: { mpesaReceiptNumber: { $type: 'string' } } }
+);
 
 module.exports = mongoose.model('Transaction', transactionSchema);
