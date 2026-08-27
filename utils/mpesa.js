@@ -11,26 +11,57 @@ async function getAccessToken(forceRefresh = false) {
         return cachedToken;
     }
 
-    const credentials = Buffer.from(
-        `${process.env.DARAJA_CONSUMER_KEY}:${process.env.DARAJA_CONSUMER_SECRET}`
-    ).toString("base64");
+    const consumerKey = process.env.DARAJA_CONSUMER_KEY;
+    const consumerSecret = process.env.DARAJA_CONSUMER_SECRET;
+
+    const credentials = Buffer.from(`${consumerKey}:${consumerSecret}`).toString("base64");
 
     const res = await fetch(`${DARAJA_BASE_URL}/oauth/v1/generate?grant_type=client_credentials`, {
-        headers: { Authorization: `Basic ${credentials}` },
+        headers: {
+            Authorization: `Basic ${credentials}`,
+            Accept: "application/json",
+        },
     });
 
     if (!res.ok) {
         const body = await res.text().catch(() => "");
-        let details = body;
-        try {
-            const parsed = JSON.parse(body);
-            details = parsed.errorMessage || parsed.error_description || parsed.message || body;
-        } catch (_) {
-            // Keep the raw response when Daraja does not return JSON.
+        const contentType = res.headers.get("content-type") || "unknown";
+        const requestId =
+            res.headers.get("x-request-id") ||
+            res.headers.get("x-correlation-id") ||
+            res.headers.get("x-amzn-requestid") ||
+            "none";
+
+        let details = body.trim();
+        if (details) {
+            try {
+                const parsed = JSON.parse(details);
+                details =
+                    parsed.errorMessage ||
+                    parsed.error_description ||
+                    parsed.message ||
+                    details;
+            } catch (_) {
+                // Keep the raw response when Daraja does not return JSON.
+            }
         }
 
+        console.error("Daraja OAuth rejected request", {
+            status: res.status,
+            statusText: res.statusText,
+            baseUrl: DARAJA_BASE_URL,
+            environment: process.env.DARAJA_ENV || "sandbox(default)",
+            contentType,
+            bodyLength: body.length,
+            requestId,
+            consumerKeyConfigured: Boolean(consumerKey),
+            consumerSecretConfigured: Boolean(consumerSecret),
+            consumerKeyLength: consumerKey?.length || 0,
+            consumerSecretLength: consumerSecret?.length || 0,
+        });
+
         throw new Error(
-            `Daraja OAuth request failed (${res.status}): ${details || "Unknown provider error"}`
+            `Daraja OAuth request failed (${res.status}): ${details || "Provider returned an empty error response"}`
         );
     }
 
