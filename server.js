@@ -14,6 +14,7 @@ const ticketRoutes = require('./routes/ticketRoutes.js');
 const postRoutes = require('./routes/postRoutes.js');
 const userRoutes = require('./routes/userRoutes.js');
 const { handleMpesaCallback } = require('./controllers/walletController.js');
+const { getAccessToken } = require('./utils/mpesa.js');
 
 const app = express()
 const PORT = process.env.PORT || 5000
@@ -95,6 +96,46 @@ app.get('/api/health', (req, res) => {
         }
     )
 })
+
+app.get('/api/mpesa/diagnostics/oauth', async (req, res) => {
+    const expectedToken = process.env.MPESA_DIAGNOSTIC_TOKEN;
+    const suppliedToken = req.get('x-mpesa-diagnostic-token');
+
+    if (!expectedToken || !suppliedToken || suppliedToken !== expectedToken) {
+        return res.status(404).json({ message: 'Not found' });
+    }
+
+    try {
+        const startedAt = Date.now();
+        await getAccessToken(true);
+
+        return res.json({
+            ok: true,
+            environment: process.env.DARAJA_ENV || 'sandbox(default)',
+            baseUrl: process.env.DARAJA_ENV === 'production'
+                ? 'https://api.safaricom.co.ke'
+                : 'https://sandbox.safaricom.co.ke',
+            elapsedMs: Date.now() - startedAt,
+            consumerKeyConfigured: Boolean(process.env.DARAJA_CONSUMER_KEY),
+            consumerSecretConfigured: Boolean(process.env.DARAJA_CONSUMER_SECRET),
+            consumerKeyLength: process.env.DARAJA_CONSUMER_KEY?.length || 0,
+            consumerSecretLength: process.env.DARAJA_CONSUMER_SECRET?.length || 0,
+        });
+    } catch (error) {
+        return res.status(502).json({
+            ok: false,
+            environment: process.env.DARAJA_ENV || 'sandbox(default)',
+            baseUrl: process.env.DARAJA_ENV === 'production'
+                ? 'https://api.safaricom.co.ke'
+                : 'https://sandbox.safaricom.co.ke',
+            error: error.message,
+            consumerKeyConfigured: Boolean(process.env.DARAJA_CONSUMER_KEY),
+            consumerSecretConfigured: Boolean(process.env.DARAJA_CONSUMER_SECRET),
+            consumerKeyLength: process.env.DARAJA_CONSUMER_KEY?.length || 0,
+            consumerSecretLength: process.env.DARAJA_CONSUMER_SECRET?.length || 0,
+        });
+    }
+});
 
 app.post('/api/mpesa/callback', handleMpesaCallback);
 app.use('/api/auth', authRoutes);
