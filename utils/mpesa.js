@@ -1,4 +1,3 @@
-
 const DARAJA_BASE_URL =
     process.env.DARAJA_ENV === "production"
         ? "https://api.safaricom.co.ke"
@@ -6,7 +5,6 @@ const DARAJA_BASE_URL =
 
 let cachedToken = null;
 let cachedTokenExpiresAt = 0;
-
 
 async function getAccessToken(forceRefresh = false) {
     if (!forceRefresh && cachedToken && Date.now() < cachedTokenExpiresAt) {
@@ -22,7 +20,18 @@ async function getAccessToken(forceRefresh = false) {
     });
 
     if (!res.ok) {
-        throw new Error(`Daraja OAuth request failed: ${res.status}`);
+        const body = await res.text().catch(() => "");
+        let details = body;
+        try {
+            const parsed = JSON.parse(body);
+            details = parsed.errorMessage || parsed.error_description || parsed.message || body;
+        } catch (_) {
+            // Keep the raw response when Daraja does not return JSON.
+        }
+
+        throw new Error(
+            `Daraja OAuth request failed (${res.status}): ${details || "Unknown provider error"}`
+        );
     }
 
     const data = await res.json();
@@ -32,7 +41,6 @@ async function getAccessToken(forceRefresh = false) {
     }
 
     cachedToken = data.access_token;
-   
     cachedTokenExpiresAt = Date.now() + (Number(data.expires_in || 3599) - 60) * 1000;
 
     return cachedToken;
@@ -75,7 +83,6 @@ function buildPassword(timestamp) {
     return Buffer.from(raw).toString("base64");
 }
 
-
 async function initiateStkPush({ phone, amount, accountReference, transactionDesc }) {
     const timestamp = buildTimestamp();
     const password = buildPassword(timestamp);
@@ -109,7 +116,7 @@ async function initiateStkPush({ phone, amount, accountReference, transactionDes
         throw new Error(`Daraja STK push failed (${res.status}): ${providerMessage}`);
     }
 
-    return data; 
+    return data;
 }
 
 module.exports = { getAccessToken, initiateStkPush };
