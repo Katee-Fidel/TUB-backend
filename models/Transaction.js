@@ -1,29 +1,35 @@
-// models/Transaction.js
 const mongoose = require('mongoose');
 
 const transactionSchema = new mongoose.Schema(
-    {
-        user: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
-        wallet: { type: mongoose.Schema.Types.ObjectId, ref: "Wallet", required: true },
-        amount: { type: Number, required: true, min: 1 },
-        phone: { type: String, required: true, trim: true },
+  {
+    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+    wallet: { type: mongoose.Schema.Types.ObjectId, ref: 'Wallet', required: true, index: true },
+    event: { type: mongoose.Schema.Types.ObjectId, ref: 'Event', default: null, index: true },
+    ticket: { type: mongoose.Schema.Types.ObjectId, ref: 'Ticket', default: null, index: true },
 
-        merchantRequestID: { type: String, required: true },
-        checkoutRequestID: { type: String, required: true, unique: true },
-
-        status: {
-            type: String,
-            enum: ["pending", "completed", "failed"],
-            default: "pending",
-        },
-
-      
-        resultCode: { type: Number, default: null },
-        resultDesc: { type: String, default: "" },
+    type: {
+      type: String,
+      enum: ['topup', 'ticket_purchase', 'savings_contribution', 'refund'],
+      required: true,
+      index: true,
     },
-    { timestamps: true }
+    direction: { type: String, enum: ['credit', 'debit'], required: true },
+    amount: { type: Number, required: true, min: 0.01 },
+    status: { type: String, enum: ['pending', 'completed', 'failed'], default: 'pending', index: true },
+
+    phone: { type: String, trim: true, default: '' },
+    merchantRequestID: { type: String, default: null, index: true },
+    checkoutRequestID: { type: String, default: null, unique: true, sparse: true },
+    mpesaReceiptNumber: { type: String, default: null, unique: true, sparse: true, index: true },
+    transactionDate: { type: Date, default: null },
+    resultCode: { type: Number, default: null },
+    resultDesc: { type: String, default: '' },
+    relatedTransaction: { type: mongoose.Schema.Types.ObjectId, ref: 'Transaction', default: null },
+  },
+  { timestamps: true }
 );
 
 transactionSchema.index({ user: 1, createdAt: -1 });
+transactionSchema.index({ wallet: 1, createdAt: -1 });
 
-module.exports = mongoose.model("Transaction", transactionSchema);
+module.exports = mongoose.model('Transaction', transactionSchema);
