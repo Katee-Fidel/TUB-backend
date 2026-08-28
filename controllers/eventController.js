@@ -1,7 +1,6 @@
 const Event = require("../models/Event.js");
 const Ticket = require("../models/Ticket.js");
 const Wallet = require("../models/Wallet.js");
-const Transaction = require("../models/Transaction.js");
 const { cloudinary } = require("../config/cloudinary.js");
 const { generateAndUploadQRCode } = require("../utils/qrCode.js");
 const { initiateStkPush } = require("../utils/mpesa.js");
@@ -10,98 +9,44 @@ const { createLedgerEntry } = require("../services/ledger.js");
 const { randomUUID } = require("crypto");
 
 async function createEvent(req, res) {
-  try {
-    const { title, description, venue, date, ticketPrice, totalTickets, status } = req.body;
-    if (!title || !description || !venue || !date || ticketPrice === undefined || ticketPrice === "" || totalTickets === undefined || totalTickets === "") return res.status(400).json({ message: "Missing required event fields" });
-    const event = await Event.create({ artist: req.user.id, title, description, venue, date, ticketPrice, totalTickets, status: status === "published" ? "published" : "draft", bannerUrl: req.file?.path || "", bannerPublicId: req.file?.filename || "" });
-    return res.status(201).json({ event });
-  } catch (err) { console.error("createEvent error:", err); return res.status(500).json({ message: "Server error creating event" }); }
+  try { const { title, description, venue, date, ticketPrice, totalTickets, status } = req.body; if (!title || !description || !venue || !date || ticketPrice === undefined || ticketPrice === "" || totalTickets === undefined || totalTickets === "") return res.status(400).json({ message: "Missing required event fields" }); const event = await Event.create({ artist: req.user.id, title, description, venue, date, ticketPrice, totalTickets, status: status === "published" ? "published" : "draft", bannerUrl: req.file?.path || "", bannerPublicId: req.file?.filename || "" }); return res.status(201).json({ event }); } catch (err) { console.error("createEvent error:", err); return res.status(500).json({ message: "Server error creating event" }); }
 }
-
 async function getPublicEvents(req, res) { try { const events = await Event.find({ status: "published" }).sort({ date: 1 }).populate("artist", "name avatarUrl"); return res.status(200).json({ events }); } catch (err) { console.error("getPublicEvents error:", err); return res.status(500).json({ message: "Server error fetching events" }); } }
 async function getMyEvents(req, res) { try { const events = await Event.find({ artist: req.user.id }).sort({ createdAt: -1 }); return res.status(200).json({ events }); } catch (err) { console.error("getMyEvents error:", err); return res.status(500).json({ message: "Server error fetching your events" }); } }
-
-async function getEventAnalytics(req, res) {
-  try {
-    const event = await Event.findOne({ _id: req.params.id, artist: req.user.id });
-    if (!event) return res.status(404).json({ message: "Event not found" });
-    const [summaryRows, recentTickets] = await Promise.all([
-      Ticket.aggregate([{ $match: { event: event._id } }, { $group: { _id: "$status", orders: { $sum: 1 }, quantity: { $sum: "$quantity" }, revenue: { $sum: "$totalAmount" } } }]),
-      Ticket.find({ event: event._id }).populate("user", "name email").sort({ createdAt: -1 }).limit(10).select("user quantity totalAmount unitPrice status paymentMethod createdAt"),
-    ]);
-    const byStatus = Object.fromEntries(summaryRows.map((row) => [row._id, row]));
-    const paid = byStatus.paid || { orders: 0, quantity: 0, revenue: 0 };
-    const used = byStatus.used || { orders: 0, quantity: 0, revenue: 0 };
-    const pending = byStatus.pending || { orders: 0, quantity: 0, revenue: 0 };
-    const cancelled = byStatus.cancelled || { orders: 0, quantity: 0, revenue: 0 };
-    return res.status(200).json({ event, analytics: { capacity: event.totalTickets, ticketsSold: event.ticketsSold, ticketsRemaining: Math.max(0, event.totalTickets - event.ticketsSold), revenue: paid.revenue + used.revenue, paidTickets: paid.quantity, pendingTickets: pending.quantity, cancelledTickets: cancelled.quantity, checkIns: used.quantity, orders: { paid: paid.orders, pending: pending.orders, cancelled: cancelled.orders, used: used.orders } }, recentTransactions: recentTickets });
-  } catch (err) { console.error("getEventAnalytics error:", err); return res.status(500).json({ message: "Server error fetching event analytics" }); }
-}
-
+async function getEventAnalytics(req, res) { try { const event = await Event.findOne({ _id: req.params.id, artist: req.user.id }); if (!event) return res.status(404).json({ message: "Event not found" }); const [summaryRows, recentTickets] = await Promise.all([Ticket.aggregate([{ $match: { event: event._id } }, { $group: { _id: "$status", orders: { $sum: 1 }, quantity: { $sum: "$quantity" }, revenue: { $sum: "$totalAmount" } } }]), Ticket.find({ event: event._id }).populate("user", "name email").sort({ createdAt: -1 }).limit(10).select("user quantity totalAmount unitPrice status paymentMethod createdAt")]); const byStatus = Object.fromEntries(summaryRows.map((row) => [row._id, row])); const paid = byStatus.paid || { orders: 0, quantity: 0, revenue: 0 }; const used = byStatus.used || { orders: 0, quantity: 0, revenue: 0 }; const pending = byStatus.pending || { orders: 0, quantity: 0, revenue: 0 }; const cancelled = byStatus.cancelled || { orders: 0, quantity: 0, revenue: 0 }; return res.status(200).json({ event, analytics: { capacity: event.totalTickets, ticketsSold: event.ticketsSold, ticketsRemaining: Math.max(0, event.totalTickets - event.ticketsSold), revenue: paid.revenue + used.revenue, paidTickets: paid.quantity, pendingTickets: pending.quantity, cancelledTickets: cancelled.quantity, checkIns: used.quantity, orders: { paid: paid.orders, pending: pending.orders, cancelled: cancelled.orders, used: used.orders } }, recentTransactions: recentTickets }); } catch (err) { console.error("getEventAnalytics error:", err); return res.status(500).json({ message: "Server error fetching event analytics" }); } }
 async function getEventById(req, res) { try { const visibility = [{ status: "published" }]; if (req.user) visibility.push({ artist: req.user.id }); const event = await Event.findOne({ _id: req.params.id, $or: visibility }).populate("artist", "name avatarUrl"); if (!event) return res.status(404).json({ message: "Event not found" }); return res.status(200).json({ event }); } catch (err) { return res.status(400).json({ message: "Invalid event id" }); } }
 async function updateEvent(req, res) { try { const event = await Event.findById(req.params.id); if (!event) return res.status(404).json({ message: "Event not found" }); if (event.artist.toString() !== req.user.id) return res.status(403).json({ message: "You do not own this event" }); for (const field of ["title", "description", "venue", "date", "ticketPrice", "totalTickets", "status"]) if (req.body[field] !== undefined) event[field] = req.body[field]; if (event.totalTickets < event.ticketsSold) return res.status(400).json({ message: "Total tickets cannot be less than tickets already sold" }); if (req.file) { if (event.bannerPublicId) await cloudinary.uploader.destroy(event.bannerPublicId).catch(() => {}); event.bannerUrl = req.file.path; event.bannerPublicId = req.file.filename; } await event.save(); return res.status(200).json({ event }); } catch (err) { console.error("updateEvent error:", err); return res.status(500).json({ message: "Server error updating event" }); } }
 async function deleteEvent(req, res) { try { const event = await Event.findById(req.params.id); if (!event) return res.status(404).json({ message: "Event not found" }); if (event.artist.toString() !== req.user.id) return res.status(403).json({ message: "You do not own this event" }); if (event.bannerPublicId) await cloudinary.uploader.destroy(event.bannerPublicId).catch(() => {}); await event.deleteOne(); return res.status(200).json({ message: "Event deleted" }); } catch (err) { console.error("deleteEvent error:", err); return res.status(500).json({ message: "Server error deleting event" }); } }
 
 async function purchaseEventTicket(req, res) {
   try {
-    const event = await Event.findById(req.params.id);
-    if (!event) return res.status(404).json({ message: "Event not found" });
-    if (event.status !== "published") return res.status(400).json({ message: "This event is not currently open for ticket purchase" });
-    const quantity = Number(req.body.quantity ?? 1);
-    const paymentMethod = req.body.paymentMethod || "wallet";
-    const phone = req.body.phone || "";
-    if (!["wallet", "mpesa"].includes(paymentMethod)) return res.status(400).json({ message: "Invalid payment method" });
-    if (!Number.isInteger(quantity) || quantity <= 0) return res.status(400).json({ message: "Quantity must be a positive whole number" });
-
-    // Atomically reserve capacity by incrementing sold only when a payment is finalized.
-    const remainingTickets = event.totalTickets - event.ticketsSold;
-    if (quantity > remainingTickets) return res.status(400).json({ message: `Only ${remainingTickets} ticket(s) remaining for this event` });
-    const totalAmount = event.ticketPrice * quantity;
-    const ticket = await Ticket.create({ user: req.user.id, event: event._id, quantity, unitPrice: event.ticketPrice, totalAmount, paymentMethod, status: "pending", qrCode: `pending-${randomUUID()}`, qrImageUrl: null });
-    ticket.qrCode = createTicketToken(ticket); await ticket.save();
+    const event = await Event.findById(req.params.id); if (!event) return res.status(404).json({ message: "Event not found" }); if (event.status !== "published") return res.status(400).json({ message: "This event is not currently open for ticket purchase" });
+    const quantity = Number(req.body.quantity ?? 1); const paymentMethod = req.body.paymentMethod || "wallet"; const phone = req.body.phone || "";
+    if (!["wallet", "mpesa"].includes(paymentMethod)) return res.status(400).json({ message: "Invalid payment method" }); if (!Number.isInteger(quantity) || quantity <= 0) return res.status(400).json({ message: "Quantity must be a positive whole number" });
+    if (quantity > event.totalTickets - event.ticketsSold) return res.status(400).json({ message: `Only ${Math.max(0, event.totalTickets - event.ticketsSold)} ticket(s) remaining for this event` });
+    const totalAmount = event.ticketPrice * quantity; const ticket = await Ticket.create({ user: req.user.id, event: event._id, quantity, unitPrice: event.ticketPrice, totalAmount, paymentMethod, status: "pending", qrCode: `pending-${randomUUID()}`, qrImageUrl: null }); ticket.qrCode = createTicketToken(ticket); await ticket.save();
 
     if (paymentMethod === "wallet") {
       const wallet = await Wallet.findOneAndUpdate({ user: req.user.id, balance: { $gte: totalAmount } }, { $inc: { balance: -totalAmount } }, { new: true });
       if (!wallet) { await ticket.deleteOne(); return res.status(400).json({ message: `Insufficient wallet balance (need KES ${totalAmount})` }); }
       try {
         const qrImageUrl = await generateAndUploadQRCode(ticket.qrCode, ticket._id.toString());
-        ticket.status = "paid"; ticket.qrImageUrl = qrImageUrl; await ticket.save();
         const sold = await Event.updateOne({ _id: event._id, ticketsSold: { $lte: event.totalTickets - quantity } }, { $inc: { ticketsSold: quantity } });
         if (!sold.modifiedCount) throw new Error("Ticket inventory could not be finalized");
-        await createLedgerEntry({ user: req.user.id, wallet: wallet._id, event: event._id, ticket: ticket._id, type: "ticket_purchase", direction: "debit", amount: totalAmount, status: "completed" });
+        ticket.status = "paid"; ticket.qrImageUrl = qrImageUrl; const ledger = await createLedgerEntry({ user: req.user.id, wallet: wallet._id, event: event._id, ticket: ticket._id, type: "ticket_purchase", direction: "debit", amount: totalAmount, status: "completed" }); ticket.transaction = ledger._id; await ticket.save();
         return res.status(201).json({ message: "Ticket purchase successful", ticket: ticket.toObject() });
       } catch (error) {
-        // Compensate the wallet/ticket when finalization fails.
-        await Wallet.updateOne({ _id: wallet._id }, { $inc: { balance: totalAmount } });
-        await ticket.deleteOne().catch(() => {});
-        console.error("wallet ticket purchase finalization failed:", error);
-        return res.status(500).json({ message: "Could not finalize ticket purchase" });
+        await Wallet.updateOne({ _id: wallet._id }, { $inc: { balance: totalAmount } }); await ticket.deleteOne().catch(() => {}); console.error("wallet ticket purchase finalization failed:", error); return res.status(500).json({ message: "Could not finalize ticket purchase" });
       }
     }
 
     if (!phone) { await ticket.deleteOne(); return res.status(400).json({ message: "Phone number required for M-Pesa payment" }); }
-    const normalizedPhone = String(phone).replace(/^\+/, "").replace(/^0/, "254");
-    if (!/^254\d{9}$/.test(normalizedPhone)) { await ticket.deleteOne(); return res.status(400).json({ message: "Invalid phone number format (expected 2547xxxxxxxx)" }); }
-    const wallet = await Wallet.findOne({ user: req.user.id });
-    if (!wallet) { await ticket.deleteOne(); return res.status(404).json({ message: "Wallet not found" }); }
-
-    const pendingTransaction = await createLedgerEntry({ user: req.user.id, wallet: wallet._id, event: event._id, ticket: ticket._id, type: "ticket_purchase", direction: "debit", amount: totalAmount, status: "pending", phone: normalizedPhone });
+    const normalizedPhone = String(phone).replace(/^\+/, "").replace(/^0/, "254"); if (!/^254\d{9}$/.test(normalizedPhone)) { await ticket.deleteOne(); return res.status(400).json({ message: "Invalid phone number format (expected 2547xxxxxxxx)" }); }
+    const wallet = await Wallet.findOne({ user: req.user.id }); if (!wallet) { await ticket.deleteOne(); return res.status(404).json({ message: "Wallet not found" }); }
+    const pendingTransaction = await createLedgerEntry({ user: req.user.id, wallet: wallet._id, event: event._id, ticket: ticket._id, type: "ticket_purchase", direction: "debit", amount: totalAmount, status: "pending", phone: normalizedPhone }); ticket.transaction = pendingTransaction._id; await ticket.save();
     try {
-      const stkResponse = await initiateStkPush({ phone: normalizedPhone, amount: Math.round(totalAmount), accountReference: `TUB-${event._id.toString().slice(-6)}-${ticket._id.toString().slice(-6)}`, transactionDesc: `${event.title} - ${quantity} ticket(s)` });
-      ticket.checkoutRequestID = stkResponse.CheckoutRequestID || null;
-      ticket.merchantRequestID = stkResponse.MerchantRequestID || null;
-      await ticket.save();
-      pendingTransaction.checkoutRequestID = ticket.checkoutRequestID;
-      pendingTransaction.merchantRequestID = ticket.merchantRequestID;
-      await pendingTransaction.save();
-      return res.status(201).json({ message: "M-Pesa STK push initiated — check status at /api/tickets/{id}/status", ticketId: ticket._id.toString() });
-    } catch (error) {
-      ticket.status = "cancelled"; await ticket.save();
-      pendingTransaction.status = "failed"; pendingTransaction.resultDesc = error.message || "STK push failed"; await pendingTransaction.save();
-      console.error("STK push initiation failed:", error);
-      return res.status(502).json({ message: "Could not initiate M-Pesa payment. Please try again." });
-    }
+      const stkResponse = await initiateStkPush({ phone: normalizedPhone, amount: Math.round(totalAmount), accountReference: `TUB-${event._id.toString().slice(-6)}-${ticket._id.toString().slice(-6)}`, transactionDesc: `${event.title} - ${quantity} ticket(s)` }); ticket.checkoutRequestID = stkResponse.CheckoutRequestID || null; ticket.merchantRequestID = stkResponse.MerchantRequestID || null; await ticket.save(); pendingTransaction.checkoutRequestID = ticket.checkoutRequestID; pendingTransaction.merchantRequestID = ticket.merchantRequestID; await pendingTransaction.save(); return res.status(201).json({ message: "M-Pesa STK push initiated — check status at /api/tickets/{id}/status", ticketId: ticket._id.toString() });
+    } catch (error) { ticket.status = "cancelled"; await ticket.save(); pendingTransaction.status = "failed"; pendingTransaction.resultDesc = error.message || "STK push failed"; await pendingTransaction.save(); console.error("STK push initiation failed:", error); return res.status(502).json({ message: "Could not initiate M-Pesa payment. Please try again." }); }
   } catch (err) { console.error("purchaseEventTicket error:", err); return res.status(500).json({ message: "Server error purchasing ticket" }); }
 }
-
 module.exports = { createEvent, getPublicEvents, getMyEvents, getEventAnalytics, getEventById, updateEvent, deleteEvent, purchaseEventTicket };
