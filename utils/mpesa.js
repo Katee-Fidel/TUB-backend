@@ -1,3 +1,6 @@
+const https = require("https");
+const dns = require("dns").promises;
+const crypto = require("crypto");
 
 const DARAJA_BASE_URL =
     process.env.DARAJA_ENV === "production"
@@ -7,34 +10,81 @@ const DARAJA_BASE_URL =
 let cachedToken = null;
 let cachedTokenExpiresAt = 0;
 
+function requestOAuthToken() {
+    return new Promise((resolve, reject) => {
+        const consumerKey = process.env.DARAJA_CONSUMER_KEY;
+        const consumerSecret = process.env.DARAJA_CONSUMER_SECRET;
+        const credentials = Buffer.from(`${consumerKey}:${consumerSecret}`).toString("base64");
+        const url = new URL(`${DARAJA_BASE_URL}/oauth/v1/generate?grant_type=client_credentials`);
+
+        const req = https.request({
+            protocol: url.protocol,
+            hostname: url.hostname,
+            port: url.port || 443,
+            path: `${url.pathname}${url.search}`,
+            method: "GET",
+            headers: {
+                Authorization: `Basic ${credentials}`,
+                Accept: "application/json",
+                "User-Agent": "TUB-backend/1.0",
+            },
+        }, (res) => {
+            let body = "";
+            res.setEncoding("utf8");
+            res.on("data", (chunk) => { body += chunk; });
+            res.on("end", () => resolve({ res, body }));
+        });
+
+        req.setTimeout(15000, () => req.destroy(new Error("Daraja OAuth request timed out")));
+        req.on("error", reject);
+        req.end();
+    });
+}
 
 async function getAccessToken(forceRefresh = false) {
-    if (!forceRefresh && cachedToken && Date.now() < cachedTokenExpiresAt) {
-        return cachedToken;
+    if (!forceRefresh && cachedToken && Date.now() < cachedTokenExpiresAt) return cachedToken;
+
+    const { res, body } = await requestOAuthToken();
+
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+        const contentType = res.headers["content-type"] || "unknown";
+        const requestId = res.headers["x-request-id"] || res.headers["x-correlation-id"] || res.headers["x-amzn-requestid"] || "none";
+        let details = body.trim();
+        if (details) {
+            try {
+                const parsed = JSON.parse(details);
+                details = parsed.errorMessage || parsed.error_description || parsed.message || details;
+            } catch (_) {}
+        }
+        console.error("Daraja OAuth rejected request", {
+            status: res.statusCode,
+            statusText: res.statusMessage,
+            baseUrl: DARAJA_BASE_URL,
+            environment: process.env.DARAJA_ENV || "sandbox(default)",
+            contentType,
+            bodyLength: body.length,
+            requestId,
+            server: res.headers.server || "unknown",
+            via: res.headers.via || "none",
+            consumerKeyConfigured: Boolean(process.env.DARAJA_CONSUMER_KEY),
+            consumerSecretConfigured: Boolean(process.env.DARAJA_CONSUMER_SECRET),
+            consumerKeyLength: process.env.DARAJA_CONSUMER_KEY?.length || 0,
+            consumerSecretLength: process.env.DARAJA_CONSUMER_SECRET?.length || 0,
+        });
+        throw new Error(`Daraja OAuth request failed (${res.statusCode}): ${details || "Provider returned an empty error response"}`);
     }
 
-    const credentials = Buffer.from(
-        `${process.env.DARAJA_CONSUMER_KEY}:${process.env.DARAJA_CONSUMER_SECRET}`
-    ).toString("base64");
-
-    const res = await fetch(`${DARAJA_BASE_URL}/oauth/v1/generate?grant_type=client_credentials`, {
-        headers: { Authorization: `Basic ${credentials}` },
-    });
-
-    if (!res.ok) {
-        throw new Error(`Daraja OAuth request failed: ${res.status}`);
-    }
-
-    const data = await res.json();
-
-    if (!data.access_token) {
-        throw new Error("Daraja OAuth response did not include an access token");
-    }
+    let data;
+    try { data = JSON.parse(body); } catch (_) { throw new Error("Daraja OAuth response was not valid JSON"); }
+    if (!data.access_token) throw new Error("Daraja OAuth response did not include an access token");
 
     cachedToken = data.access_token;
-   
     cachedTokenExpiresAt = Date.now() + (Number(data.expires_in || 3599) - 60) * 1000;
-
+    console.log("Daraja OAuth token acquired", {
+        tokenLength: cachedToken.length,
+        tokenSha256: crypto.createHash("sha256").update(cachedToken, "utf8").digest("hex"),
+        expiresIn: Number(data.expires_in || 3599),
+    });
     return cachedToken;
 }
 
@@ -43,43 +93,75 @@ function isInvalidAccessTokenResponse(data) {
     return message.toLowerCase().includes("invalid access token");
 }
 
-async function sendStkPush(token, payload) {
-    const res = await fetch(`${DARAJA_BASE_URL}/mpesa/stkpush/v1/processrequest`, {
-        method: "POST",
-        headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-    });
+function requestStkPush(token, payload) {
+    return new Promise((resolve, reject) => {
+        const url = new URL(`${DARAJA_BASE_URL}/mpesa/stkpush/v1/processrequest`);
+        const body = JSON.stringify(payload);
 
-    const data = await res.json().catch(() => ({}));
-    return { res, data };
+        const req = https.request({
+            protocol: url.protocol,
+            hostname: url.hostname,
+            port: url.port || 443,
+            path: `${url.pathname}${url.search}`,
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${token}`,
+                Accept: "application/json",
+                "Content-Type": "application/json",
+                "Content-Length": Buffer.byteLength(body),
+                "User-Agent": "TUB-backend/1.0",
+            },
+        }, (res) => {
+            let responseBody = "";
+            res.setEncoding("utf8");
+            res.on("data", (chunk) => { responseBody += chunk; });
+            res.on("end", () => resolve({ res, body: responseBody }));
+        });
+
+        req.setTimeout(20000, () => req.destroy(new Error("Daraja STK push request timed out")));
+        req.on("error", reject);
+        req.write(body);
+        req.end();
+    });
+}
+
+async function sendStkPush(token, payload) {
+    const { res, body } = await requestStkPush(token, payload);
+    let data = {};
+    try { data = body ? JSON.parse(body) : {}; } catch (_) { data = { rawBody: body }; }
+
+    if (!res.ok) {
+        console.error("Daraja STK push rejected request", {
+            status: res.statusCode,
+            statusText: res.statusMessage,
+            baseUrl: DARAJA_BASE_URL,
+            environment: process.env.DARAJA_ENV || "sandbox(default)",
+            tokenLength: token.length,
+            tokenSha256: crypto.createHash("sha256").update(token, "utf8").digest("hex"),
+            contentType: res.headers["content-type"] || "unknown",
+            bodyLength: body.length,
+            body: body.slice(0, 1000),
+            requestId: res.headers["x-request-id"] || res.headers["x-correlation-id"] || res.headers["x-amzn-requestid"] || "none",
+            server: res.headers.server || "unknown",
+        });
+    }
+
+    return { res: { ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode }, data };
 }
 
 function buildTimestamp() {
     const now = new Date();
     const pad = (n) => String(n).padStart(2, "0");
-    return (
-        now.getFullYear().toString() +
-        pad(now.getMonth() + 1) +
-        pad(now.getDate()) +
-        pad(now.getHours()) +
-        pad(now.getMinutes()) +
-        pad(now.getSeconds())
-    );
+    return now.getFullYear().toString() + pad(now.getMonth() + 1) + pad(now.getDate()) + pad(now.getHours()) + pad(now.getMinutes()) + pad(now.getSeconds());
 }
 
 function buildPassword(timestamp) {
-    const raw = `${process.env.DARAJA_SHORTCODE}${process.env.DARAJA_PASSKEY}${timestamp}`;
-    return Buffer.from(raw).toString("base64");
+    return Buffer.from(`${process.env.DARAJA_SHORTCODE}${process.env.DARAJA_PASSKEY}${timestamp}`).toString("base64");
 }
-
 
 async function initiateStkPush({ phone, amount, accountReference, transactionDesc }) {
     const timestamp = buildTimestamp();
     const password = buildPassword(timestamp);
-
     const payload = {
         BusinessShortCode: process.env.DARAJA_SHORTCODE,
         Password: password,
@@ -95,21 +177,56 @@ async function initiateStkPush({ phone, amount, accountReference, transactionDes
     };
 
     let { res, data } = await sendStkPush(await getAccessToken(), payload);
-
-    // A server can retain a token after Daraja invalidates it. Refresh once and
-    // retry the exact request; do not retry other failures to avoid duplicate STK prompts.
     if (!res.ok && isInvalidAccessTokenResponse(data)) {
         cachedToken = null;
         cachedTokenExpiresAt = 0;
         ({ res, data } = await sendStkPush(await getAccessToken(true), payload));
     }
-
     if (!res.ok) {
-        const providerMessage = data.errorMessage || data.error_description || "STK push request failed";
-        throw new Error(`Daraja STK push failed (${res.status}): ${providerMessage}`);
+        throw new Error(`Daraja STK push failed (${res.status}): ${data.errorMessage || data.error_description || data.message || data.rawBody || "STK push request failed"}`);
     }
-
-    return data; 
+    return data;
 }
 
-module.exports = { getAccessToken, initiateStkPush };
+async function getNetworkDiagnostics() {
+    const hostname = new URL(DARAJA_BASE_URL).hostname;
+    const addresses = await dns.lookup(hostname, { all: true });
+
+    return new Promise((resolve, reject) => {
+        const url = new URL(`${DARAJA_BASE_URL}/oauth/v1/generate?grant_type=client_credentials`);
+        const req = https.request({
+            hostname: url.hostname,
+            port: 443,
+            path: `${url.pathname}${url.search}`,
+            method: "HEAD",
+            headers: { "User-Agent": "TUB-backend/1.0", Accept: "*/*" },
+        }, (res) => {
+            const socket = res.socket;
+            resolve({
+                dnsAddresses: addresses.map((item) => item.address),
+                status: res.statusCode,
+                statusText: res.statusMessage,
+                remoteAddress: socket?.remoteAddress || null,
+                remotePort: socket?.remotePort || null,
+                localAddress: socket?.localAddress || null,
+                localPort: socket?.localPort || null,
+                tlsProtocol: socket?.getProtocol?.() || null,
+                tlsCipher: socket?.getCipher?.().name || null,
+                authorized: socket?.authorized ?? null,
+                authorizationError: socket?.authorizationError || null,
+                responseHeaders: {
+                    contentType: res.headers["content-type"] || null,
+                    server: res.headers.server || null,
+                    via: res.headers.via || null,
+                    requestId: res.headers["x-request-id"] || res.headers["x-correlation-id"] || null,
+                },
+            });
+            res.resume();
+        });
+        req.setTimeout(15000, () => req.destroy(new Error("Daraja network diagnostic timed out")));
+        req.on("error", reject);
+        req.end();
+    });
+}
+
+module.exports = { getAccessToken, initiateStkPush, getNetworkDiagnostics };

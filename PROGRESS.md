@@ -1,6 +1,6 @@
 # Tamasha Hub MVP — Progress Tracker
 
-Last updated: 2026-08-27
+Last updated: 2026-08-28
 
 ## Completed
 
@@ -22,8 +22,17 @@ Last updated: 2026-08-27
 - [x] QR image generation and Cloudinary storage
 - [x] Signed QR ticket tokens
 - [x] Artist-only ticket validation endpoint and validation screen
+- [x] Mobile camera QR scanning with manual-token fallback
+- [x] Event poster displayed together with the ticket QR
 - [x] Duplicate Transaction index warning fixed
 - [x] Invalid Daraja access-token recovery: refresh once and retry
+- [x] Wallet purchase balance deduction and ticket inventory reservation use MongoDB transactions
+- [x] M-Pesa ticket purchase creates a pending ledger entry before STK push
+- [x] M-Pesa callback records receipt/date/phone and finalizes ticket inventory atomically
+- [x] Duplicate callbacks do not re-credit wallet or re-sell inventory
+- [x] Callback arriving before STK identifiers are persisted returns non-2xx so Daraja can retry safely
+- [x] Savings contributions create ledger entries atomically with wallet deduction
+- [x] Wallet ticket refunds restore wallet balance/inventory and create ledger entries atomically
 
 ### Community and profiles
 
@@ -49,43 +58,29 @@ Last updated: 2026-08-27
 
 ### Highest priority — payment safety
 
-- [ ] Make wallet balance deduction and ticket inventory updates atomic
-- [ ] Make M-Pesa callback processing fully idempotent under simultaneous callbacks
-- [ ] Prevent simultaneous purchases from overselling an event
-- [ ] Add transaction-ledger entries for ticket purchases, refunds, and savings contributions
+- [ ] Add automated tests for wallet/inventory concurrency and callback idempotency
+- [ ] Verify duplicate M-Pesa callbacks and failed payments against the live sandbox callback
+- [ ] Verify sold-out/concurrent ticket purchases with automated/integration tests
+- [ ] Verify every ledger flow in the deployed environment: top-up, purchase, savings, refund, receipt
 
 ### Day 6 refinements
 
 - [ ] Add user/event tag selectors and visible tags in the post form/feed
-- [ ] Add camera QR scanning (current validation screen accepts scanner text)
 - [ ] Add public non-artist profile pages if required
 - [ ] Add post moderation, pagination, and reporting before public scale-up
-
-### Deployment and Day 7
-
-- [ ] Push the latest backend and frontend changes to GitHub
-- [ ] Deploy backend to Render
-- [ ] Set Render environment variables and MongoDB Atlas network access
-- [ ] Replace `DARAJA_CALLBACK_URL` with the Render `/api/mpesa/callback` URL
-- [ ] Deploy frontend to Vercel and set `NEXT_PUBLIC_API_URL`
-- [ ] Verify production cookie/CORS behavior using the final Vercel URL as `CLIENT_URL`
-- [ ] Test the live Daraja sandbox callback flow
 
 ### Testing
 
 - [ ] Replace placeholder backend test script with automated tests
 - [ ] Test RBAC and event ownership restrictions
-- [ ] Test duplicate M-Pesa callbacks and failed payments
-- [ ] Test sold-out/concurrent ticket purchases
 - [ ] Test QR reuse, invalid QR tokens, and cross-artist validation attempts
-- [ ] Run the end-to-end demo flow: register → create event → top up → buy → validate → post
+- [ ] Run the complete end-to-end demo flow: register → create event → top up → buy → validate → post
 
 ## Current blockers
 
-1. The backend is not yet deployed publicly, so Daraja cannot reach the callback endpoint.
-2. Production M-Pesa testing must wait until the Render URL is set as `DARAJA_CALLBACK_URL`.
-3. Payment/inventory concurrency hardening should be complete before accepting real payments.
+- No known blocker for sandbox M-Pesa STK initiation; the correct Daraja M-Pesa Express application is now configured.
+- Phase A should not be considered production-ready until automated concurrency/idempotency tests and the remaining callback/ledger cases pass.
 
 ## Next recommended task
 
-Deploy the backend to Render, verify `/api/health`, then harden M-Pesa callback and ticket-inventory operations before enabling real payment testing.
+Add focused automated tests for the transaction ledger, wallet balance atomicity, ticket inventory concurrency, M-Pesa callback idempotency, and QR reuse. Then run the deployed sandbox end-to-end flow and merge Phase A only after those checks pass.

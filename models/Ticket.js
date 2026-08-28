@@ -17,9 +17,11 @@ const ticketSchema = new mongoose.Schema(
       enum: ['wallet', 'mpesa'],
       required: true,
     },
+    // qrData is the canonical signed admission payload. qrCode is retained
+    // for backwards compatibility with tickets already stored in production.
+    qrData: { type: String, required: true, unique: true },
     qrCode: { type: String, required: true, unique: true },
-    qrImageUrl: { type: String, default: null }, // Cloudinary URL for the QR image
-    // For M-Pesa tickets, track the STK push transaction
+    qrImageUrl: { type: String, default: null },
     checkoutRequestID: { type: String, default: null },
     merchantRequestID: { type: String, default: null },
   },
