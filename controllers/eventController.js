@@ -27,6 +27,63 @@ async function getMyEvents(req, res) {
   catch (err) { console.error("getMyEvents error:", err); return res.status(500).json({ message: "Server error fetching your events" }); }
 }
 
+// GET /api/events/:id/analytics (artist owner only)
+async function getEventAnalytics(req, res) {
+  try {
+    const event = await Event.findOne({ _id: req.params.id, artist: req.user.id });
+    if (!event) return res.status(404).json({ message: "Event not found" });
+
+    const [summaryRows, recentTickets] = await Promise.all([
+      Ticket.aggregate([
+        { $match: { event: event._id } },
+        {
+          $group: {
+            _id: "$status",
+            orders: { $sum: 1 },
+            quantity: { $sum: "$quantity" },
+            revenue: { $sum: "$totalAmount" },
+          },
+        },
+      ]),
+      Ticket.find({ event: event._id })
+        .populate("user", "name email")
+        .sort({ createdAt: -1 })
+        .limit(10)
+        .select("user quantity totalAmount unitPrice status paymentMethod createdAt"),
+    ]);
+
+    const byStatus = Object.fromEntries(summaryRows.map((row) => [row._id, row]));
+    const paid = byStatus.paid || { orders: 0, quantity: 0, revenue: 0 };
+    const used = byStatus.used || { orders: 0, quantity: 0, revenue: 0 };
+    const pending = byStatus.pending || { orders: 0, quantity: 0, revenue: 0 };
+    const cancelled = byStatus.cancelled || { orders: 0, quantity: 0, revenue: 0 };
+
+    return res.status(200).json({
+      event,
+      analytics: {
+        capacity: event.totalTickets,
+        ticketsSold: event.ticketsSold,
+        ticketsRemaining: Math.max(0, event.totalTickets - event.ticketsSold),
+        revenue: paid.revenue + used.revenue,
+        paidTickets: paid.quantity,
+        pendingTickets: pending.quantity,
+        cancelledTickets: cancelled.quantity,
+        checkIns: used.quantity,
+        orders: {
+          paid: paid.orders,
+          pending: pending.orders,
+          cancelled: cancelled.orders,
+          used: used.orders,
+        },
+      },
+      recentTransactions: recentTickets,
+    });
+  } catch (err) {
+    console.error("getEventAnalytics error:", err);
+    return res.status(500).json({ message: "Server error fetching event analytics" });
+  }
+}
+
 async function getEventById(req, res) {
   try {
     const visibility = [{ status: "published" }];
@@ -78,7 +135,6 @@ async function purchaseEventTicket(req, res) {
     const totalAmount = event.ticketPrice * quantity;
     const ticket = await Ticket.create({ user: req.user.id, event: event._id, quantity, unitPrice: event.ticketPrice, totalAmount, paymentMethod, status: "pending", qrCode: `pending-${randomUUID()}`, qrImageUrl: null });
     ticket.qrCode = createTicketToken(ticket); await ticket.save();
-
     if (paymentMethod === "wallet") {
       const wallet = await Wallet.findOne({ user: req.user.id });
       if (!wallet) { await ticket.deleteOne(); return res.status(404).json({ message: "Wallet not found" }); }
@@ -89,7 +145,6 @@ async function purchaseEventTicket(req, res) {
       event.ticketsSold += quantity; await event.save();
       return res.status(201).json({ message: "Ticket purchase successful", ticket: ticket.toObject() });
     }
-
     if (paymentMethod === "mpesa") {
       if (!phone) { await ticket.deleteOne(); return res.status(400).json({ message: "Phone number required for M-Pesa payment" }); }
       const normalizedPhone = String(phone).replace(/^\+/, "").replace(/^0/, "254");
@@ -103,4 +158,4 @@ async function purchaseEventTicket(req, res) {
   } catch (err) { console.error("purchaseEventTicket error:", err); return res.status(500).json({ message: "Server error purchasing ticket" }); }
 }
 
-module.exports = { createEvent, getPublicEvents, getMyEvents, getEventById, updateEvent, deleteEvent, purchaseEventTicket };
+module.exports = { createEvent, getPublicEvents, getMyEvents, getEventAnalytics, getEventById, updateEvent, deleteEvent, purchaseEventTicket };
