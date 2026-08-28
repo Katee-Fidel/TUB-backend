@@ -6,6 +6,7 @@ const {
     createEvent,
     getPublicEvents,
     getMyEvents,
+    getEventAnalytics,
     getEventById,
     updateEvent,
     deleteEvent,
@@ -18,6 +19,7 @@ router.use(verifyOrigin);
 
 router.get('/', getPublicEvents);
 router.get('/mine', requireAuth, requireRole('artist'), getMyEvents);
+router.get('/:id/analytics', requireAuth, requireRole('artist'), getEventAnalytics);
 router.get('/ping-fan-blocked', requireAuth, requireRole('artist'), (req, res) => {
     res.status(200).json({
         message: "If you see this weh ni msanii"
