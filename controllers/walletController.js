@@ -8,19 +8,8 @@ const { generateAndUploadQRCode } = require('../utils/qrCode.js');
 
 async function getMyWallet(req, res) {
     try {
-        const wallet = await Wallet.findOne({ user: req.user.id }).populate(
-            "savingGoals.event",
-            "title date bannerUrl"
-        );
-
-        // Every user gets a wallet on signup (see authController.register), so
-        // this should be unreachable in normal operation — but don't silently
-        // auto-create one here if it's somehow missing, since that would mask
-        // a real data-integrity bug instead of surfacing it.
-        if (!wallet) {
-            return res.status(404).json({ message: "Wallet not found" });
-        }
-
+        const wallet = await Wallet.findOne({ user: req.user.id }).populate("savingGoals.event", "title date bannerUrl");
+        if (!wallet) return res.status(404).json({ message: "Wallet not found" });
         return res.status(200).json({ wallet });
     } catch (error) {
         console.error("getMyWallet error:", error);
@@ -32,54 +21,20 @@ async function topupWallet(req, res) {
     try {
         const amount = Number(req.body.amount);
         const rawPhone = String(req.body.phone || "").trim();
-
-        if (!Number.isFinite(amount) || amount <= 0) {
-            return res.status(400).json({ message: "Top-up amount must be greater than 0" });
-        }
-
-        if (!rawPhone) {
-            return res.status(400).json({ message: "Phone number is required" });
-        }
-
+        if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ message: "Top-up amount must be greater than 0" });
+        if (!rawPhone) return res.status(400).json({ message: "Phone number is required" });
         const normalizedPhone = rawPhone.replace(/^\+/, "").replace(/^0/, "254");
-        const phonePattern = /^254\d{9}$/;
-
-        if (!phonePattern.test(normalizedPhone)) {
-            return res.status(400).json({ message: "Enter a valid phone number in the format 2547xx..." });
-        }
-
-        let wallet = await Wallet.findOne({ user: req.user.id });
-        if (!wallet) {
-            return res.status(404).json({ message: "Wallet not found" });
-        }
-
-        const transaction = await Transaction.create({
-            user: req.user.id,
-            wallet: wallet._id,
-            amount,
-            phone: normalizedPhone,
-            merchantRequestID: `pending-${Date.now()}`,
-            checkoutRequestID: `pending-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`,
-            status: "pending",
-        });
-
+        if (!/^254\d{9}$/.test(normalizedPhone)) return res.status(400).json({ message: "Enter a valid phone number in the format 2547xx..." });
+        const wallet = await Wallet.findOne({ user: req.user.id });
+        if (!wallet) return res.status(404).json({ message: "Wallet not found" });
+        const transaction = await Transaction.create({ user: req.user.id, wallet: wallet._id, amount, phone: normalizedPhone, merchantRequestID: `pending-${Date.now()}`, checkoutRequestID: `pending-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`, status: "pending" });
         try {
-            const response = await initiateStkPush({
-                phone: normalizedPhone,
-                amount,
-                accountReference: `TUB-${wallet._id.toString().slice(-6)}`,
-                transactionDesc: "Wallet top up",
-            });
-
+            const response = await initiateStkPush({ phone: normalizedPhone, amount, accountReference: `TUB-${wallet._id.toString().slice(-6)}`, transactionDesc: "Wallet top up" });
             transaction.merchantRequestID = response.MerchantRequestID || transaction.merchantRequestID;
             transaction.checkoutRequestID = response.CheckoutRequestID || transaction.checkoutRequestID;
             transaction.resultDesc = response.ResponseDescription || "STK push initiated";
             await transaction.save();
-
-            return res.status(200).json({
-                message: "Top-up request initiated",
-                transaction,
-            });
+            return res.status(200).json({ message: "Top-up request initiated", transaction });
         } catch (error) {
             transaction.status = "failed";
             transaction.resultDesc = error.message || "STK push failed";
@@ -94,15 +49,8 @@ async function topupWallet(req, res) {
 
 async function getTopupStatus(req, res) {
     try {
-        const transaction = await Transaction.findOne({
-            _id: req.params.id,
-            user: req.user.id,
-        });
-
-        if (!transaction) {
-            return res.status(404).json({ message: "Top-up not found" });
-        }
-
+        const transaction = await Transaction.findOne({ _id: req.params.id, user: req.user.id });
+        if (!transaction) return res.status(404).json({ message: "Top-up not found" });
         return res.status(200).json({ transaction });
     } catch (error) {
         console.error("getTopupStatus error:", error);
@@ -110,147 +58,76 @@ async function getTopupStatus(req, res) {
     }
 }
 
+function callbackMetadata(callback) {
+    const metadata = {};
+    for (const item of callback.CallbackMetadata?.Item || []) if (item?.Name) metadata[item.Name] = item.Value;
+    return metadata;
+}
+
 async function handleMpesaCallback(req, res) {
     try {
         const callback = req.body?.Body?.stkCallback;
-
-        if (!callback) {
-            return res.status(400).json({ ResultCode: 1, ResultDesc: "Missing callback payload" });
-        }
+        if (!callback) return res.status(400).json({ ResultCode: 1, ResultDesc: "Missing callback payload" });
 
         const checkoutRequestID = callback.CheckoutRequestID;
         const merchantRequestID = callback.MerchantRequestID;
         const resultCode = Number(callback.ResultCode ?? -1);
         const resultDesc = callback.ResultDesc || "M-Pesa callback received";
+        const metadata = callbackMetadata(callback);
 
-        // Try to find in transactions (wallet topup)
-        let transaction = await Transaction.findOne({ checkoutRequestID });
-        
+        const transaction = await Transaction.findOne({ checkoutRequestID });
         if (transaction) {
-            // Handle wallet topup callback
-            if (merchantRequestID) {
-                transaction.merchantRequestID = merchantRequestID;
-            }
-
+            transaction.merchantRequestID = merchantRequestID || transaction.merchantRequestID;
             transaction.resultCode = resultCode;
             transaction.resultDesc = resultDesc;
-
-            if (transaction.status === "completed") {
-                await transaction.save();
-                return res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" });
-            }
-
-            if (resultCode !== 0) {
-                transaction.status = "failed";
-                await transaction.save();
-                return res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" });
-            }
-
-            const callbackItems = callback.CallbackMetadata?.Item || [];
-            const metadata = {};
-            for (const item of callbackItems) {
-                if (item && item.Name) {
-                    metadata[item.Name] = item.Value;
-                }
-            }
-
+            if (transaction.status === "completed") { await transaction.save(); return res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" }); }
+            if (resultCode !== 0) { transaction.status = "failed"; await transaction.save(); return res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" }); }
             const callbackAmount = Number(metadata.Amount ?? transaction.amount);
-            if (!Number.isFinite(callbackAmount) || callbackAmount <= 0) {
-                transaction.status = "failed";
-                transaction.resultDesc = "Invalid callback amount";
-                await transaction.save();
+            if (!Number.isFinite(callbackAmount) || callbackAmount <= 0 || Math.abs(callbackAmount - Number(transaction.amount)) > 0.01) {
+                transaction.status = "failed"; transaction.resultDesc = "Invalid or mismatched callback amount"; await transaction.save();
                 return res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" });
             }
-
             const wallet = await Wallet.findById(transaction.wallet);
-            if (!wallet) {
-                transaction.status = "failed";
-                transaction.resultDesc = "Wallet not found";
-                await transaction.save();
-                return res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" });
-            }
-
-            if (Math.abs(callbackAmount - Number(transaction.amount)) > 0.01) {
-                transaction.status = "failed";
-                transaction.resultDesc = "Callback amount mismatch";
-                await transaction.save();
-                return res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" });
-            }
-
+            if (!wallet) { transaction.status = "failed"; transaction.resultDesc = "Wallet not found"; await transaction.save(); return res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" }); }
             wallet.balance = Number(wallet.balance || 0) + callbackAmount;
             await wallet.save();
-
             transaction.status = "completed";
             await transaction.save();
-
             return res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" });
         }
 
-        // Try to find in tickets (ticket purchase)
-        const ticket = await Ticket.findOne({ checkoutRequestID });
-        
-        if (ticket) {
-            // Handle ticket purchase callback
-            if (ticket.status === "paid") {
-                // Already processed
-                return res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" });
-            }
+        const pendingTicket = await Ticket.findOne({ checkoutRequestID });
+        if (!pendingTicket) return res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" });
+        if (["paid", "used", "cancelled"].includes(pendingTicket.status)) return res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" });
 
-            if (resultCode !== 0) {
-                // Payment failed
-                ticket.status = "cancelled";
-                await ticket.save();
-                return res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" });
-            }
-
-            const callbackItems = callback.CallbackMetadata?.Item || [];
-            const metadata = {};
-            for (const item of callbackItems) {
-                if (item && item.Name) {
-                    metadata[item.Name] = item.Value;
-                }
-            }
-
-            const callbackAmount = Number(metadata.Amount ?? ticket.totalAmount);
-            if (!Number.isFinite(callbackAmount) || callbackAmount <= 0) {
-                ticket.status = "cancelled";
-                await ticket.save();
-                return res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" });
-            }
-
-            // Verify amount matches
-            if (Math.abs(callbackAmount - Number(ticket.totalAmount)) > 0.01) {
-                ticket.status = "cancelled";
-                await ticket.save();
-                return res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" });
-            }
-
-            // Generate QR code for the ticket
-            try {
-                const qrImageUrl = await generateAndUploadQRCode(ticket.qrCode, ticket._id.toString());
-                ticket.qrImageUrl = qrImageUrl;
-            } catch (err) {
-                console.error("QR code generation failed:", err);
-                // Don't fail the callback if QR generation fails — mark as paid anyway
-                ticket.qrImageUrl = null;
-            }
-
-            // Mark ticket as paid
-            ticket.status = "paid";
-            ticket.merchantRequestID = merchantRequestID || ticket.merchantRequestID;
-            await ticket.save();
-
-            // Update event sold count
-            const event = await Event.findById(ticket.event);
-            if (event) {
-                event.ticketsSold += ticket.quantity;
-                await event.save();
-            }
-
+        if (resultCode !== 0) {
+            await Ticket.updateOne({ _id: pendingTicket._id, status: "pending" }, { $set: { status: "cancelled", merchantRequestID: merchantRequestID || pendingTicket.merchantRequestID } });
             return res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" });
         }
 
-        // No matching transaction or ticket
+        const callbackAmount = Number(metadata.Amount ?? pendingTicket.totalAmount);
+        if (!Number.isFinite(callbackAmount) || callbackAmount <= 0 || Math.abs(callbackAmount - Number(pendingTicket.totalAmount)) > 0.01) {
+            await Ticket.updateOne({ _id: pendingTicket._id, status: "pending" }, { $set: { status: "cancelled", merchantRequestID: merchantRequestID || pendingTicket.merchantRequestID } });
+            return res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" });
+        }
+
+        // Claim the pending ticket exactly once. This prevents duplicate M-Pesa
+        // callback deliveries from incrementing event sales more than once.
+        const paidTicket = await Ticket.findOneAndUpdate(
+            { _id: pendingTicket._id, status: "pending" },
+            { $set: { status: "paid", merchantRequestID: merchantRequestID || pendingTicket.merchantRequestID } },
+            { new: true }
+        );
+        if (!paidTicket) return res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" });
+
+        try {
+            paidTicket.qrImageUrl = await generateAndUploadQRCode(paidTicket.qrCode, paidTicket._id.toString());
+            await paidTicket.save();
+        } catch (err) {
+            console.error("QR code generation failed:", err);
+        }
+
+        await Event.updateOne({ _id: paidTicket.event }, { $inc: { ticketsSold: paidTicket.quantity } });
         return res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" });
     } catch (error) {
         console.error("handleMpesaCallback error:", error);
