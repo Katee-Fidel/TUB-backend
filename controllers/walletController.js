@@ -128,10 +128,12 @@ async function handleMpesaCallback(req, res) {
     const session = await mongoose.startSession();
     let processedTicketId = null;
     let shouldGenerateQr = false;
+    let callbackMatchedTransaction = false;
     try {
       await session.withTransaction(async () => {
         const transaction = await Transaction.findOne({ checkoutRequestID }).session(session);
         if (!transaction) return;
+        callbackMatchedTransaction = true;
 
         // Idempotency: once a callback has transitioned the ledger out of pending,
         // duplicate callbacks cannot credit/deduct the wallet or inventory again.
@@ -222,6 +224,15 @@ async function handleMpesaCallback(req, res) {
       });
     } finally {
       await session.endSession();
+    }
+
+    // If Daraja beat our STK response persistence, the callback must be retried.
+    // Returning 5xx here is intentional: the transaction can only be processed
+    // safely once the checkoutRequestID has been stored, while matched callbacks
+    // are idempotent and return 200 even when repeated.
+    if (!callbackMatchedTransaction) {
+      console.warn('M-Pesa callback received before checkout transaction was linked', { checkoutRequestID });
+      return res.status(500).json({ ResultCode: 1, ResultDesc: 'Transaction not ready; please retry callback' });
     }
 
     if (processedTicketId && shouldGenerateQr) {
